@@ -355,8 +355,8 @@ func (msg *MsgEthereumTx) UnmarshalBinary(b []byte) error {
 }
 
 // BuildTx builds the canonical cosmos tx from ethereum msg
-func (msg *MsgEthereumTx) BuildTx(b client.TxBuilder, evmDenom string) (signing.Tx, error) {
-	builder, ok := b.(authtx.ExtensionOptionsTxBuilder)
+func (msg *MsgEthereumTx) BuildTx(clientCtx client.Context, evmDenom string) (signing.Tx, error) {
+	builder, ok := clientCtx.TxConfig.NewTxBuilder().(authtx.ExtensionOptionsTxBuilder)
 	if !ok {
 		return nil, errors.New("unsupported builder")
 	}
@@ -387,6 +387,15 @@ func (msg *MsgEthereumTx) BuildTx(b client.TxBuilder, evmDenom string) (signing.
 	}
 	builder.SetFeeAmount(fees)
 	builder.SetGasLimit(msg.GetGas())
+
+	if clientCtx.FeePayer != nil {
+		builder.SetFeePayer(clientCtx.FeePayer)
+	}
+
+	if clientCtx.FeeGranter != nil {
+		builder.SetFeeGranter(clientCtx.FeeGranter)
+	}
+
 	tx := builder.GetTx()
 	return tx, nil
 }

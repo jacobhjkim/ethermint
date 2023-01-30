@@ -30,21 +30,24 @@ import (
 	"github.com/evmos/ethermint/x/evm/statedb"
 	evmtypes "github.com/evmos/ethermint/x/evm/types"
 
+	anteauth "github.com/cosmos/cosmos-sdk/x/auth/ante"
 	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 )
 
 // EthAccountVerificationDecorator validates an account balance checks
 type EthAccountVerificationDecorator struct {
-	ak        evmtypes.AccountKeeper
-	evmKeeper EVMKeeper
+	ak             evmtypes.AccountKeeper
+	evmKeeper      EVMKeeper
+	feegrantKeeper anteauth.FeegrantKeeper
 }
 
 // NewEthAccountVerificationDecorator creates a new EthAccountVerificationDecorator
-func NewEthAccountVerificationDecorator(ak evmtypes.AccountKeeper, ek EVMKeeper) EthAccountVerificationDecorator {
+func NewEthAccountVerificationDecorator(ak evmtypes.AccountKeeper, ek EVMKeeper, fk anteauth.FeegrantKeeper) EthAccountVerificationDecorator {
 	return EthAccountVerificationDecorator{
-		ak:        ak,
-		evmKeeper: ek,
+		ak:             ak,
+		evmKeeper:      ek,
+		feegrantKeeper: fk,
 	}
 }
 
@@ -94,7 +97,51 @@ func (avd EthAccountVerificationDecorator) AnteHandle(
 				"the sender is not EOA: address %s, codeHash <%s>", fromAddr, acct.CodeHash)
 		}
 
-		if err := keeper.CheckSenderBalance(sdkmath.NewIntFromBigInt(acct.Balance), txData); err != nil {
+		feeTx, ok := tx.(sdk.FeeTx)
+		if !ok {
+			return ctx, errorsmod.Wrap(errortypes.ErrTxDecode, "Tx must be a FeeTx")
+		}
+
+		feePayer := feeTx.FeePayer()
+		feeGranter := feeTx.FeeGranter()
+		checkBalanceFrom := acct
+
+		ctx.Logger().Info("acct: ", "acct: ", acct.Balance)
+		ctx.Logger().Info("txData.Cost(): ", "txdata: ", txData.Cost().String())
+		ctx.Logger().Info("int txData.Cost(): ", "int txdata: ", sdkmath.NewIntFromBigInt(txData.Cost()).String())
+		ctx.Logger().Info("txData.Fee(): ", "txdata.fee: ", txData.Fee().String())
+
+		evmParams := avd.evmKeeper.GetParams(ctx)
+		evmDenom := evmParams.GetEvmDenom()
+
+		// if feegranter set deduct fee from feegranter account.
+		// this works with only when feegrant enabled.
+		if feeGranter != nil {
+			if avd.feegrantKeeper == nil {
+				return ctx, errorsmod.Wrapf(errortypes.ErrInvalidRequest, "fee grants are not enabled")
+			} else if !feeGranter.Equals(feePayer) {
+				fee := sdk.NewCoins(sdk.NewCoin(evmDenom, sdkmath.NewIntFromBigInt(txData.Fee())))
+				ctx.Logger().Info("fee: ", "fee: ", fee.String())
+
+				// Deduct allowance from granter's account
+				if err := avd.feegrantKeeper.UseGrantedFees(ctx, feeGranter, feePayer, fee, tx.GetMsgs()); err != nil {
+					return ctx, errorsmod.Wrapf(err, "%s does not allow to pay fees for %s", feeGranter, feePayer)
+				}
+			}
+
+			feeGranterAddress := common.BytesToAddress(avd.ak.GetAccount(ctx, feeGranter).GetAddress())
+			feeGranterAcct := avd.evmKeeper.GetAccount(ctx, feeGranterAddress)
+			if feeGranterAcct == nil {
+				return ctx, errorsmod.Wrapf(errortypes.ErrInvalidAddress, "fee granter account not found: %s", feeGranterAddress)
+			} else if feeGranterAcct.IsContract() {
+				return ctx, errorsmod.Wrapf(errortypes.ErrInvalidType,
+					"the fee granter is not EOA: address %s, codeHash <%s>", feeGranterAddress, feeGranterAcct.CodeHash)
+			}
+
+			checkBalanceFrom = feeGranterAcct
+		}
+
+		if err := keeper.CheckSenderBalance(sdkmath.NewIntFromBigInt(checkBalanceFrom.Balance), txData); err != nil {
 			return ctx, errorsmod.Wrap(err, "failed to check sender balance")
 		}
 	}
@@ -104,16 +151,19 @@ func (avd EthAccountVerificationDecorator) AnteHandle(
 // EthGasConsumeDecorator validates enough intrinsic gas for the transaction and
 // gas consumption.
 type EthGasConsumeDecorator struct {
+	ak           evmtypes.AccountKeeper
 	evmKeeper    EVMKeeper
 	maxGasWanted uint64
 }
 
 // NewEthGasConsumeDecorator creates a new EthGasConsumeDecorator
 func NewEthGasConsumeDecorator(
+	ak evmtypes.AccountKeeper,
 	evmKeeper EVMKeeper,
 	maxGasWanted uint64,
 ) EthGasConsumeDecorator {
 	return EthGasConsumeDecorator{
+		ak,
 		evmKeeper,
 		maxGasWanted,
 	}
@@ -191,7 +241,21 @@ func (egcd EthGasConsumeDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simula
 			return ctx, errorsmod.Wrapf(err, "failed to verify the fees")
 		}
 
-		err = egcd.evmKeeper.DeductTxCostsFromUserBalance(ctx, fees, common.HexToAddress(msgEthTx.From))
+		feeTx, ok := tx.(sdk.FeeTx)
+		if !ok {
+			return ctx, errorsmod.Wrap(errortypes.ErrTxDecode, "Tx must be a FeeTx")
+		}
+
+		feeGranter := feeTx.FeeGranter()
+		deductFeesFrom := common.HexToAddress(msgEthTx.From)
+
+		// validation for fee granter and fee payer has been performed in the EthAccountVerificationDecorator
+		if feeGranter != nil {
+			deductFeesFrom = common.BytesToAddress(egcd.ak.GetAccount(ctx, feeGranter).GetAddress())
+		}
+
+		ctx.Logger().Info("deducting transaction costs from user balance", "fee: ", fees.String())
+		err = egcd.evmKeeper.DeductTxCostsFromUserBalance(ctx, fees, deductFeesFrom)
 		if err != nil {
 			return ctx, errorsmod.Wrapf(err, "failed to deduct transaction costs from user balance")
 		}
