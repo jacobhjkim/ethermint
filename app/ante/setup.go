@@ -140,9 +140,9 @@ func (vbd EthValidateBasicDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simu
 		return ctx, errorsmod.Wrap(errortypes.ErrInvalidRequest, "for eth tx AuthInfo SignerInfos should be empty")
 	}
 
-	if authInfo.Fee.Payer != "" || authInfo.Fee.Granter != "" {
-		return ctx, errorsmod.Wrap(errortypes.ErrInvalidRequest, "for eth tx AuthInfo Fee payer and granter should be empty")
-	}
+	//if authInfo.Fee.Payer != "" || authInfo.Fee.Granter != "" {
+	//	return ctx, errorsmod.Wrap(errortypes.ErrInvalidRequest, "for eth tx AuthInfo Fee payer and granter should be empty")
+	//}
 
 	sigs := protoTx.Signatures
 	if len(sigs) > 0 {

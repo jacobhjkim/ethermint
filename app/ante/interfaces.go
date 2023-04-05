@@ -16,6 +16,7 @@
 package ante
 
 import (
+	"github.com/cosmos/cosmos-sdk/x/feegrant"
 	"math/big"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -61,4 +62,10 @@ type FeeMarketKeeper interface {
 	GetParams(ctx sdk.Context) (params feemarkettypes.Params)
 	AddTransientGasWanted(ctx sdk.Context, gasWanted uint64) (uint64, error)
 	GetBaseFeeEnabled(ctx sdk.Context) bool
+}
+
+// FeegrantKeeper defines the expected feegrant keeper.
+type FeegrantKeeper interface {
+	UseGrantedFees(ctx sdk.Context, granter, grantee sdk.AccAddress, fee sdk.Coins, msgs []sdk.Msg) error
+	GetAllowance(ctx sdk.Context, granter, grantee sdk.AccAddress) (feegrant.FeeAllowanceI, error)
 }
